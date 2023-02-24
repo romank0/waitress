@@ -9,6 +9,9 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
 
         return ThreadedTaskDispatcher(**kwargs)
 
+    def _append_task(self, dispatcher, task):
+        dispatcher.queue.append((task, time.time_ns()))
+
     def test_handler_thread_task_raises(self):
         inst = self._makeOne()
         inst.threads.add(0)
@@ -22,7 +25,7 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
 
         task = BadDummyTask()
         inst.logger = DummyLogger()
-        inst.queue.append(task)
+        self._append_task(inst, task)
         inst.active_count += 1
         inst.handler_thread(0)
         self.assertEqual(inst.stop_count, 0)
@@ -82,7 +85,7 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
         inst.threads.add(0)
         inst.logger = DummyLogger()
         task = DummyTask()
-        inst.queue.append(task)
+        self._append_task(inst, task)
         self.assertEqual(inst.shutdown(timeout=0.01), True)
         self.assertEqual(
             inst.logger.logged,
@@ -164,10 +167,6 @@ class TestTask(unittest.TestCase):
         request.version = "8.4"
         inst = self._makeOne(request=request)
         self.assertEqual(inst.version, "1.0")
-
-    def test_ctor_captures_creation_time(self):
-        inst = self._makeOne()
-        self.assertLessEqual(inst.create_time_ns, time.time_ns())
 
     def test_build_response_header_bad_http_version(self):
         inst = self._makeOne()
@@ -982,9 +981,6 @@ class TestErrorTask(unittest.TestCase):
 class DummyTask:
     serviced = False
     cancelled = False
-
-    def __init__(self):
-        self.create_time_ns = time.time_ns()
 
     def service(self):
         self.serviced = True

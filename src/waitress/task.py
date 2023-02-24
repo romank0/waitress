@@ -82,9 +82,9 @@ class ThreadedTaskDispatcher:
                     self.thread_exit_cv.notify()
                     break
 
-                task = self.queue.popleft()
+                task, create_time_ns = self.queue.popleft()
                 self.report_queue_length(len(self.queue))
-                self.report_task_wait_time(task)
+                self.report_task_wait_time(task, create_time_ns)
             try:
                 task.service()
             except BaseException:
@@ -111,7 +111,7 @@ class ThreadedTaskDispatcher:
 
     def add_task(self, task):
         with self.lock:
-            self.queue.append(task)
+            self.queue.append((task, time.time_ns()))
             self.queue_cv.notify()
             queue_size = len(self.queue)
             self.report_queue_length(queue_size)
@@ -138,7 +138,7 @@ class ThreadedTaskDispatcher:
                 if len(queue) > 0:
                     self.logger.warning("Canceling %d pending task(s)", len(queue))
                 while queue:
-                    task = queue.popleft()
+                    task, _ = queue.popleft()
                     task.cancel()
                 self.queue_cv.notify_all()
                 return True
@@ -148,10 +148,10 @@ class ThreadedTaskDispatcher:
         if self.metrics_collector:
             self.metrics_collector.report_queue_length(length)
 
-    def report_task_wait_time(self, task):
+    def report_task_wait_time(self, task, create_time_ns):
         if self.metrics_collector:
             self.metrics_collector.report_task_wait_time(
-                time.time_ns() - task.create_time_ns
+                time.time_ns() - create_time_ns
             )
 
 
@@ -159,7 +159,6 @@ class Task:
     close_on_finish = False
     status = "200 OK"
     wrote_header = False
-    create_time_ns = 0
     start_time = 0
     content_length = None
     content_bytes_written = 0
@@ -178,7 +177,6 @@ class Task:
             # fall back to a version we support.
             version = "1.0"
         self.version = version
-        self.create_time_ns = time.time_ns()
 
     def service(self):
         try:
