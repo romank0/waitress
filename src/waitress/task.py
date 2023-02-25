@@ -47,13 +47,16 @@ class ThreadedTaskDispatcher:
     active_count = 0  # Number of currently active threads
     logger = logger
     queue_logger = queue_logger
+    metrics_collector = None
 
-    def __init__(self):
+    def __init__(self, metrics_collector=None):
         self.threads = set()
         self.queue = deque()
         self.lock = threading.Lock()
         self.queue_cv = threading.Condition(self.lock)
         self.thread_exit_cv = threading.Condition(self.lock)
+        self.metrics_collector = metrics_collector
+        self.report_queue_length(0)
 
     def start_new_thread(self, target, thread_no):
         t = threading.Thread(
@@ -79,7 +82,9 @@ class ThreadedTaskDispatcher:
                     self.thread_exit_cv.notify()
                     break
 
-                task = self.queue.popleft()
+                task, create_time_ns = self.queue.popleft()
+                self.report_queue_length(len(self.queue))
+                self.report_task_wait_time(task, create_time_ns)
             try:
                 task.service()
             except BaseException:
@@ -106,9 +111,10 @@ class ThreadedTaskDispatcher:
 
     def add_task(self, task):
         with self.lock:
-            self.queue.append(task)
+            self.queue.append((task, time.time_ns()))
             self.queue_cv.notify()
             queue_size = len(self.queue)
+            self.report_queue_length(queue_size)
             idle_threads = len(self.threads) - self.stop_count - self.active_count
             if queue_size > idle_threads:
                 self.queue_logger.warning(
@@ -132,11 +138,21 @@ class ThreadedTaskDispatcher:
                 if len(queue) > 0:
                     self.logger.warning("Canceling %d pending task(s)", len(queue))
                 while queue:
-                    task = queue.popleft()
+                    task, _ = queue.popleft()
                     task.cancel()
                 self.queue_cv.notify_all()
                 return True
         return False
+
+    def report_queue_length(self, length):
+        if self.metrics_collector:
+            self.metrics_collector.report_queue_length(length)
+
+    def report_task_wait_time(self, task, create_time_ns):
+        if self.metrics_collector:
+            self.metrics_collector.report_task_wait_time(
+                time.time_ns() - create_time_ns
+            )
 
 
 class Task:

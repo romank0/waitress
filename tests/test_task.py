@@ -1,12 +1,16 @@
 import io
+import time
 import unittest
 
 
 class TestThreadedTaskDispatcher(unittest.TestCase):
-    def _makeOne(self):
+    def _makeOne(self, **kwargs):
         from waitress.task import ThreadedTaskDispatcher
 
-        return ThreadedTaskDispatcher()
+        return ThreadedTaskDispatcher(**kwargs)
+
+    def _append_task(self, dispatcher, task):
+        dispatcher.queue.append((task, time.time_ns()))
 
     def test_handler_thread_task_raises(self):
         inst = self._makeOne()
@@ -21,7 +25,7 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
 
         task = BadDummyTask()
         inst.logger = DummyLogger()
-        inst.queue.append(task)
+        self._append_task(inst, task)
         inst.active_count += 1
         inst.handler_thread(0)
         self.assertEqual(inst.stop_count, 0)
@@ -81,7 +85,7 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
         inst.threads.add(0)
         inst.logger = DummyLogger()
         task = DummyTask()
-        inst.queue.append(task)
+        self._append_task(inst, task)
         self.assertEqual(inst.shutdown(timeout=0.01), True)
         self.assertEqual(
             inst.logger.logged,
@@ -99,6 +103,53 @@ class TestThreadedTaskDispatcher(unittest.TestCase):
     def test_shutdown_no_cancel_pending(self):
         inst = self._makeOne()
         self.assertEqual(inst.shutdown(cancel_pending=False, timeout=0.01), False)
+
+    def _make_test_collector(self):
+        from waitress.observability import TasksMetricsCollector
+
+        class TestMetricsCollector(TasksMetricsCollector):
+            def __init__(self):
+                self.queue_lengths = []
+                self.wait_times = []
+
+            def report_queue_length(self, length):
+                self.queue_lengths.append(length)
+
+            def report_task_wait_time(self, wait_time_ns):
+                self.wait_times.append(wait_time_ns)
+
+        return TestMetricsCollector()
+
+    def test_add_task_reports_length_to_metrics_collector(self):
+        test_collector = self._make_test_collector()
+        inst = self._makeOne(metrics_collector=test_collector)
+
+        self.assertEqual(test_collector.queue_lengths, [0])
+
+        inst.add_task(DummyTask())
+
+        self.assertEqual(test_collector.queue_lengths, [0, 1])
+
+    def test_task_start_reports_length_and_wait_to_metrics_collector(self):
+        class StopLoopDummyTask(DummyTask):
+            def service(self):
+                super().service()
+                inst.stop_count += 1
+                raise Exception
+
+        test_collector = self._make_test_collector()
+        inst = self._makeOne(metrics_collector=test_collector)
+
+        inst.active_count += 1
+        inst.add_task(StopLoopDummyTask())
+
+        self.assertEqual(test_collector.wait_times, [])
+        self.assertEqual(test_collector.queue_lengths, [0, 1])
+
+        inst.handler_thread(0)
+
+        self.assertEqual(test_collector.queue_lengths, [0, 1, 0])
+        self.assertEqual(len(test_collector.wait_times), 1)
 
 
 class TestTask(unittest.TestCase):
